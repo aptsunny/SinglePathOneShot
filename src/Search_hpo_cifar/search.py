@@ -19,7 +19,8 @@ torch.backends.cudnn.deterministic = True
 
 from network import ShuffleNetV2_OneShot
 
-from tester import get_cand_err
+from tester import get_cand_err, test_nni
+
 from flops import get_cand_flops
 
 from torch.autograd import Variable
@@ -31,9 +32,7 @@ import argparse
 import functools
 print = functools.partial(print, flush=True)
 
-choice = lambda x: x[np.random.randint(len(x))] if isinstance(
-    x, tuple) else choice(tuple(x))
-
+choice = lambda x: x[np.random.randint(len(x))] if isinstance(x, tuple) else choice(tuple(x))
 
 class EvolutionSearcher(object):
 
@@ -48,13 +47,49 @@ class EvolutionSearcher(object):
         self.mutation_num = args.mutation_num
         self.flops_limit = args.flops_limit
 
-        self.model = ShuffleNetV2_OneShot()
+        # search network
+        # self.model = ShuffleNetV2_OneShot()
+        # self.model = ShuffleNetV2_OneShot(n_class=100)
+        from network_origin import cifar_fast
+        self.model = cifar_fast(input_size=32, n_class=100)
+
         self.model = torch.nn.DataParallel(self.model).cuda()
+
         # supernet_state_dict = torch.load(
         #     '../Supernet/models/checkpoint-latest.pth.tar')['state_dict']
+
         # /home/ubuntu/0_datasets/Search
+        # supernet_state_dict = torch.load(
+        #     '/home/ubuntu/0_datasets/Supernet/checkpoint-150000.pth.tar')['state_dict']
+
+        # one path
+        # supernet_state_dict = torch.load(
+        #     '/home/ubuntu/2_workspace/nni_hpo/3rdparty/SinglePathOneShot/src/Supernet_hpo_cifar/models_one_path/checkpoint-latest.pth.tar')['state_dict']
+
+        # four
+        # supernet_state_dict = torch.load(
+        #     '/home/ubuntu/2_workspace/nni_hpo/3rdparty/SinglePathOneShot/src/Supernet_hpo_cifar/models_fixed_lr_6076/checkpoint-latest.pth.tar')['state_dict']
+
+
+        # supernet_state_dict = torch.load(
+        #     '/home/ubuntu/2_workspace/nni_hpo/3rdparty/SinglePathOneShot/src/Supernet_hpo_cifar/models/checkpoint-000200.pth.tar')['state_dict']
+
+        ######
+
+        # layerwise
+        # supernet_state_dict = torch.load(
+        #     '/home/ubuntu/2_workspace/nni_hpo/3rdparty/SinglePathOneShot/src/Supernet_hpo_cifar/models/layer-wise5e-4-checkpoint-000020.pth.tar')['state_dict']
+
+        # global hpo
+        # supernet_state_dict = torch.load(
+        #     '/home/ubuntu/2_workspace/nni_hpo/3rdparty/SinglePathOneShot/src/Supernet_hpo_cifar/models/70-25-hpo-layer-wisecheckpoint-latest.pth.tar')['state_dict']
+
         supernet_state_dict = torch.load(
-            '/home/ubuntu/0_datasets/Supernet/checkpoint-150000.pth.tar')['state_dict']
+            '/home/ubuntu/2_workspace/nni_hpo/3rdparty/SinglePathOneShot/src/Supernet_hpo_cifar/models/71.9150641025641-hpo-layer-wisecheckpoint-latest.pth.tar')['state_dict']
+
+        # global hpo + layerwise
+        # supernet_state_dict = torch.load(
+        #     '/home/ubuntu/2_workspace/nni_hpo/3rdparty/SinglePathOneShot/src/Supernet_hpo_cifar/models/layer-wise5e-4-checkpoint-000020.pth.tar')['state_dict']
 
         self.model.load_state_dict(supernet_state_dict)
 
@@ -67,8 +102,8 @@ class EvolutionSearcher(object):
         self.epoch = 0
         self.candidates = []
 
-        self.nr_layer = 20
-        self.nr_state = 4
+        self.nr_layer = 7 # 20
+        self.nr_state = 4 # 4
 
     def save_checkpoint(self):
         if not os.path.exists(self.log_dir):
@@ -103,16 +138,19 @@ class EvolutionSearcher(object):
         if 'visited' in info:
             return False
 
-        if 'flops' not in info:
-            info['flops'] = get_cand_flops(cand)
+        # 统计flops
+        # if 'flops' not in info:
+        #     info['flops'] = get_cand_flops(cand)
+        # print(cand, info['flops'])
 
-        print(cand, info['flops'])
-
-        if info['flops'] > self.flops_limit:
-            print('flops limit exceed')
-            return False
+        # 候选flop limited
+        # if info['flops'] > self.flops_limit:
+        #     print('flops limit exceed')
+        #     return False
 
         info['err'] = get_cand_err(self.model, cand, self.args)
+        # info['err'] = test_nni(self.model, cand, self.args)
+
 
         info['visited'] = True
 
@@ -138,14 +176,16 @@ class EvolutionSearcher(object):
 
     def get_random(self, num):
         print('random select ........')
-        cand_iter = self.stack_random_cand(
-            lambda: tuple(np.random.randint(self.nr_state) for i in range(self.nr_layer)))
+        cand_iter = self.stack_random_cand(lambda: tuple(np.random.randint(self.nr_state) for i in range(self.nr_layer)))
+        # 取出指定数量的随机候选, population_num
         while len(self.candidates) < num:
             cand = next(cand_iter)
+            # 候选的限制
             if not self.is_legal(cand):
                 continue
+
             self.candidates.append(cand)
-            print('random {}/{}'.format(len(self.candidates), num))
+            print('random {}/{}: {} '.format(len(self.candidates), num, self.candidates))
         print('random_num = {}'.format(len(self.candidates)))
 
     def get_mutation(self, k, mutation_num, m_prob):
@@ -169,7 +209,7 @@ class EvolutionSearcher(object):
             if not self.is_legal(cand):
                 continue
             res.append(cand)
-            print('mutation {}/{}'.format(len(res), mutation_num))
+            print('mutation {}/{}: '.format(len(res), mutation_num) + str(cand))
 
         print('mutation_num = {}'.format(len(res)))
         return res
@@ -192,7 +232,7 @@ class EvolutionSearcher(object):
             if not self.is_legal(cand):
                 continue
             res.append(cand)
-            print('crossover {}/{}'.format(len(res), crossover_num))
+            print('crossover {}/{}: '.format(len(res), crossover_num) + str(cand))
 
         print('crossover_num = {}'.format(len(res)))
         return res
@@ -200,11 +240,11 @@ class EvolutionSearcher(object):
     def search(self):
         print('population_num = {} select_num = {} mutation_num = {} crossover_num = {} random_num = {} max_epochs = {}'.format(
             self.population_num, self.select_num, self.mutation_num, self.crossover_num, self.population_num - self.mutation_num - self.crossover_num, self.max_epochs))
-
-        self.load_checkpoint()
-
+        # 续点训练
+        # self.load_checkpoint()
+        # 拿到初始候选 self.candidates)
         self.get_random(self.population_num)
-
+        # 迭代轮数
         while self.epoch < self.max_epochs:
             print('epoch = {}'.format(self.epoch))
 
@@ -214,23 +254,27 @@ class EvolutionSearcher(object):
 
             self.update_top_k(
                 self.candidates, k=self.select_num, key=lambda x: self.vis_dict[x]['err'])
+
             self.update_top_k(
                 self.candidates, k=50, key=lambda x: self.vis_dict[x]['err'])
 
-            print('epoch = {} : top {} result'.format(
-                self.epoch, len(self.keep_top_k[50])))
+            print('epoch = {} : top {} result'.format(self.epoch, len(self.keep_top_k[50])))
+
             for i, cand in enumerate(self.keep_top_k[50]):
                 print('No.{} {} Top-1 err = {}'.format(
                     i + 1, cand, self.vis_dict[cand]['err']))
                 ops = [i for i in cand]
                 print(ops)
-
+            # 带概率
             mutation = self.get_mutation(
                 self.select_num, self.mutation_num, self.m_prob)
+
+            # 交叉
             crossover = self.get_crossover(self.select_num, self.crossover_num)
 
             self.candidates = mutation + crossover
 
+            # 剩余随机？
             self.get_random(self.population_num)
 
             self.epoch += 1
@@ -240,18 +284,19 @@ class EvolutionSearcher(object):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--log-dir', type=str, default='log')
-    parser.add_argument('--max-epochs', type=int, default=20)
-    parser.add_argument('--select-num', type=int, default=10)
-    parser.add_argument('--population-num', type=int, default=50)
-    parser.add_argument('--m_prob', type=float, default=0.1)
-    parser.add_argument('--crossover-num', type=int, default=25)
-    parser.add_argument('--mutation-num', type=int, default=25)
+    parser.add_argument('--log-dir', type=str, default='log_cifar')
     parser.add_argument('--flops-limit', type=float, default=330 * 1e6)
-    parser.add_argument('--max-train-iters', type=int, default=2) # 200
-    parser.add_argument('--max-test-iters', type=int, default=1) # 40
+    parser.add_argument('--max-train-iters', type=int, default=5) # 200 fintune 参数子网
+    parser.add_argument('--max-test-iters', type=int, default=3) # 40
     parser.add_argument('--train-batch-size', type=int, default=128)
-    parser.add_argument('--test-batch-size', type=int, default=200)
+    parser.add_argument('--test-batch-size', type=int, default=100) # 200
+
+    parser.add_argument('--m_prob', type=float, default=0.1)
+    parser.add_argument('--max-epochs', type=int, default=4) # 20
+    parser.add_argument('--population-num', type=int, default=10) # 50
+    parser.add_argument('--select-num', type=int, default=10)
+    parser.add_argument('--crossover-num', type=int, default=5) # 25
+    parser.add_argument('--mutation-num', type=int, default=5) # 25
     args = parser.parse_args()
 
     t = time.time()

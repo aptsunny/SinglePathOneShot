@@ -4,3 +4,6 @@
 data
 log
 models
+*/data
+*/dask-worker-space
+*/save

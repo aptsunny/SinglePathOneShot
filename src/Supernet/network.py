@@ -39,19 +39,19 @@ class ShuffleNetV2_OneShot(nn.Module):
                 self.features.append(torch.nn.ModuleList())
                 for blockIndex in range(4):
                     if blockIndex == 0:
-                        print('Shuffle3x3')
+                        # print('Shuffle3x3')
                         self.features[-1].append(
                             Shufflenet(inp, outp, mid_channels=mid_channels, ksize=3, stride=stride))
                     elif blockIndex == 1:
-                        print('Shuffle5x5')
+                        # print('Shuffle5x5')
                         self.features[-1].append(
                             Shufflenet(inp, outp, mid_channels=mid_channels, ksize=5, stride=stride))
                     elif blockIndex == 2:
-                        print('Shuffle7x7')
+                        # print('Shuffle7x7')
                         self.features[-1].append(
                             Shufflenet(inp, outp, mid_channels=mid_channels, ksize=7, stride=stride))
                     elif blockIndex == 3:
-                        print('Xception')
+                        # print('Xception')
                         self.features[-1].append(
                             Shuffle_Xception(inp, outp, mid_channels=mid_channels, stride=stride))
                     else:

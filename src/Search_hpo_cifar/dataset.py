@@ -1,0 +1,154 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+import numpy as np
+import torch
+import cv2
+import PIL
+from PIL import Image
+
+from torchvision import transforms
+from torchvision.datasets import CIFAR10, CIFAR100, SVHN
+from torch.utils.data import Sampler
+
+# import torchvision.transforms as transforms
+# import torchvision.datasets as datasets
+
+# from RandAugment import RandAugment
+
+class Cutout(object):
+    def __init__(self, length):
+        self.length = length
+
+    def __call__(self, img):
+        h, w = img.size(1), img.size(2)
+        mask = np.ones((h, w), np.float32)
+        y = np.random.randint(h)
+        x = np.random.randint(w)
+
+        y1 = np.clip(y - self.length // 2, 0, h)
+        y2 = np.clip(y + self.length // 2, 0, h)
+        x1 = np.clip(x - self.length // 2, 0, w)
+        x2 = np.clip(x + self.length // 2, 0, w)
+
+        mask[y1: y2, x1: x2] = 0.
+        mask = torch.from_numpy(mask)
+        mask = mask.expand_as(img)
+        img *= mask
+
+        return img
+
+class OpencvResize(object):
+
+    def __init__(self, size=256):
+        self.size = size
+
+    def __call__(self, img):
+        assert isinstance(img, PIL.Image.Image)
+        img = np.asarray(img) # (H,W,3) RGB
+        img = img[:,:, ::-1] # 2 BGR
+        img = np.ascontiguousarray(img)
+        H, W, _ = img.shape
+        target_size = (int(self.size/H * W + 0.5), self.size) if H < W else (self.size, int(self.size/W * H + 0.5))
+        img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+        img = img[:,:, ::-1] # 2 RGB
+        img = np.ascontiguousarray(img)
+        img = Image.fromarray(img)
+        return img
+
+class ToBGRTensor(object):
+
+    def __call__(self, img):
+        assert isinstance(img, (np.ndarray, PIL.Image.Image))
+        if isinstance(img, PIL.Image.Image):
+            img = np.asarray(img)
+        img = img[:,:, ::-1] # 2 BGR
+        img = np.transpose(img, [2, 0, 1]) # 2 (3, H, W)
+        img = np.ascontiguousarray(img)
+        img = torch.from_numpy(img).float()
+        return img
+
+class DataIterator(object):
+
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
+        self.iterator = enumerate(self.dataloader)
+
+    def next(self):
+        try:
+            _, data = next(self.iterator)
+        except Exception:
+            self.iterator = enumerate(self.dataloader)
+            _, data = next(self.iterator)
+        return data[0], data[1]
+
+
+def get_dataset(dataset, cutout_length=0, N=3, M=5, RandA=False):
+    """
+    MEAN = [0.49139968, 0.48215827, 0.44653124]
+    STD = [0.24703233, 0.24348505, 0.26158768]
+
+    transf = [
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip()
+    ]
+
+    normalize = [
+        transforms.Resize(224), # 32
+        transforms.ToTensor(),
+        transforms.Normalize(MEAN, STD)
+    ]
+    cutout = []
+    if cutout_length > 0:
+        cutout.append(Cutout(cutout_length))
+
+    train_transform = transforms.Compose(transf + normalize + cutout)
+    # if RandA:
+        # Add RandAugment with N, M(hyperparameter)
+        # train_transform.transforms.insert(0, RandAugment(N, M))
+
+    valid_transform = transforms.Compose(normalize)
+    """
+
+    train_transform = transforms.Compose([
+        # transforms.Resize((224, 224)), # 224 Spop
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+    valid_transform = transforms.Compose([
+        # transforms.Resize((224, 224)), # 224 Spos
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
+
+
+    if dataset == "cifar10":
+        dataset_train = CIFAR10(root="./data", train=True, download=True, transform=train_transform)
+        dataset_valid = CIFAR10(root="./data", train=False, download=True, transform=valid_transform)
+
+    elif dataset == 'cifar100':
+        dataset_train = CIFAR100(root="./data", train=True, download=True, transform=train_transform)
+        dataset_valid = CIFAR100(root="./data", train=False, download=True, transform=valid_transform)
+
+    else:
+        raise NotImplementedError
+    return dataset_train, dataset_valid
+
+class SubsetSampler(Sampler):
+    r"""Samples elements from a given list of indices, without replacement.
+
+    Arguments:
+        indices (sequence): a sequence of indices
+    """
+
+    def __init__(self, indices):
+        self.indices = indices
+
+    def __iter__(self):
+        return (i for i in self.indices)
+
+    def __len__(self):
+        return len(self.indices)
+

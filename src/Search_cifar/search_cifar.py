@@ -17,7 +17,11 @@ np.random.seed(0)
 random.seed(0)
 torch.backends.cudnn.deterministic = True
 
-from network import ShuffleNetV2_OneShot
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '../Supernet_cifar'))
+
+from network_cifar import ShuffleNetV2_OneShot
+from network_mobile import SuperNetwork
 
 from tester import get_cand_err
 from flops import get_cand_flops
@@ -48,14 +52,14 @@ class EvolutionSearcher(object):
         self.mutation_num = args.mutation_num
         self.flops_limit = args.flops_limit
 
-        self.model = ShuffleNetV2_OneShot()
-        self.model = torch.nn.DataParallel(self.model).cuda()
-        # supernet_state_dict = torch.load(
-        #     '../Supernet/models/checkpoint-latest.pth.tar')['state_dict']
-        # /home/ubuntu/0_datasets/Search
-        supernet_state_dict = torch.load(
-            '/home/ubuntu/0_datasets/Supernet/checkpoint-150000.pth.tar')['state_dict']
+        self.model = SuperNetwork(shadow_bn=True)
+        # self.model = ShuffleNetV2_OneShot()
 
+        self.model = torch.nn.DataParallel(self.model).cuda()
+        supernet_state_dict = torch.load(
+            # '../Supernet/models/checkpoint-latest.pth.tar')['state_dict']
+            # '/home/ubuntu/workspace/nni_sy/3rdparty/SinglePathOneShot/src/Supernet_cifar/models/Supernet:1_checkpoint-001500.pth.tar')['state_dict']
+            '/home/ubuntu/workspace/nni_sy/3rdparty/SinglePathOneShot/src/Supernet_cifar/models/Supernet:0_checkpoint-latest.pth.tar')['state_dict']
         self.model.load_state_dict(supernet_state_dict)
 
         self.log_dir = args.log_dir
@@ -65,10 +69,10 @@ class EvolutionSearcher(object):
         self.vis_dict = {}
         self.keep_top_k = {self.select_num: [], 50: []}
         self.epoch = 0
-        self.candidates = []
 
-        self.nr_layer = 20
-        self.nr_state = 4
+        self.candidates = []
+        self.nr_layer = 5 # shuffle 20,4/ 5,2
+        self.nr_state = 2 # 4
 
     def save_checkpoint(self):
         if not os.path.exists(self.log_dir):
@@ -140,6 +144,8 @@ class EvolutionSearcher(object):
         print('random select ........')
         cand_iter = self.stack_random_cand(
             lambda: tuple(np.random.randint(self.nr_state) for i in range(self.nr_layer)))
+
+
         while len(self.candidates) < num:
             cand = next(cand_iter)
             if not self.is_legal(cand):
@@ -209,7 +215,7 @@ class EvolutionSearcher(object):
             print('epoch = {}'.format(self.epoch))
 
             self.memory.append([])
-            for cand in self.candidates:
+            for cand in self.candidates: # self.candidates
                 self.memory[-1].append(cand)
 
             self.update_top_k(
@@ -243,14 +249,14 @@ def main():
     parser.add_argument('--log-dir', type=str, default='log')
     parser.add_argument('--max-epochs', type=int, default=20)
     parser.add_argument('--select-num', type=int, default=10)
-    parser.add_argument('--population-num', type=int, default=50)
+    parser.add_argument('--population-num', type=int, default=2) # 50
     parser.add_argument('--m_prob', type=float, default=0.1)
-    parser.add_argument('--crossover-num', type=int, default=25)
-    parser.add_argument('--mutation-num', type=int, default=25)
+    parser.add_argument('--crossover-num', type=int, default=2) # 25
+    parser.add_argument('--mutation-num', type=int, default=2) # 25
     parser.add_argument('--flops-limit', type=float, default=330 * 1e6)
-    parser.add_argument('--max-train-iters', type=int, default=2) # 200
-    parser.add_argument('--max-test-iters', type=int, default=1) # 40
-    parser.add_argument('--train-batch-size', type=int, default=128)
+    parser.add_argument('--max-train-iters', type=int, default=200)
+    parser.add_argument('--max-test-iters', type=int, default=40)
+    parser.add_argument('--train-batch-size', type=int, default=16) #
     parser.add_argument('--test-batch-size', type=int, default=200)
     args = parser.parse_args()
 

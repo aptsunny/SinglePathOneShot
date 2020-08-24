@@ -5,12 +5,12 @@ from blocks import Shufflenet, Shuffle_Xception
 
 class ShuffleNetV2_OneShot(nn.Module):
 
-    def __init__(self, input_size=224, n_class=1000):
+    def __init__(self, input_size=32, n_class=10):
         super(ShuffleNetV2_OneShot, self).__init__()
 
         assert input_size % 32 == 0
 
-        self.stage_repeats = [4, 4, 8, 4]
+        self.stage_repeats = [1, 1, 2, 1]
         self.stage_out_channels = [-1, 16, 64, 160, 320, 640, 1024]
 
         # building first layer

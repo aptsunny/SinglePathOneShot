@@ -74,7 +74,9 @@ class ShuffleNetV2_OneShot(nn.Module):
             nn.Linear(self.stage_out_channels[-1], n_class, bias=False))
         self._initialize_weights()
 
-    def forward(self, x, architecture):
+    def forward(self, x, architecture=False):
+
+        # architecture = [0, 0, 3, 1, 1, 1, 0, 0, 2, 0, 2, 1, 1, 0, 2, 0, 2, 1, 3, 2]
         assert self.archLen == len(architecture)
 
         x = self.first_conv(x)
@@ -117,15 +119,44 @@ class ShuffleNetV2_OneShot(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
 if __name__ == "__main__":
-    # architecture = [0, 0, 3, 1, 1, 1, 0, 0, 2, 0, 2, 1, 1, 0, 2, 0, 2, 1, 3, 2]
+    architecture = [0, 0, 3, 1, 1, 1, 0, 0, 2, 0, 2, 1, 1, 0, 2, 0, 2, 1, 3, 2]
     # scale_list = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6]
     # scale_ids = [6, 5, 3, 5, 2, 6, 3, 4, 2, 5, 7, 5, 4, 6, 7, 4, 4, 5, 4, 3]
-    channels_scales = []
-    for i in range(len(scale_ids)):
-        channels_scales.append(scale_list[scale_ids[i]])
-    model = ShuffleNetV2_OneShot()
-    # print(model)
+    # channels_scales = []
+    # for i in range(len(scale_ids)):
+    #     channels_scales.append(scale_list[scale_ids[i]])
+
+    # ------
+    import torch
+    from torchvision import models
+    from torchsummary import summary
+    from ptflops import get_model_complexity_info
+
+    # inputs = torch.randn(3, 32, 32).unsqueeze(0)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+    model = ShuffleNetV2_OneShot(n_class=100)
+    print(model)
 
     test_data = torch.rand(5, 3, 224, 224)
-    test_outputs = model(test_data)
+    test_outputs = model(test_data, architecture)
     print(test_outputs.size())
+
+    model = model.to(device)
+
+    input_size = 224 # 224 224 #
+
+    # part1
+    with  torch.cuda.device(0):
+        # 把choice拿到forward里
+        # choice = {
+        #     0: {'conv_0': [0], 'conv_1': [0], 'conv_2': [0], 'rate': 0},
+        #     2: {'conv_0': [0], 'conv_1': [0], 'conv_2': [0], 'rate': 0}}
+
+        # flops, params = get_model_complexity_info(model, (3, 32, 32), as_strings=True, print_per_layer_stat=True)
+        flops, params = get_model_complexity_info(model, (3, input_size, input_size), as_strings=True, print_per_layer_stat=True)
+        # part2
+        summary(model, (3, input_size, input_size))
+        print('{:<30}  {:<8}'.format('Computational complexity: ', flops))
+        print('{:<30}  {:<8}'.format('Number of parameters: ', params))

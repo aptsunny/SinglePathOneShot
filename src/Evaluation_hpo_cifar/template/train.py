@@ -12,9 +12,11 @@ from PIL import Image
 import time
 import logging
 import argparse
+import pickle
 from network import ShuffleNetV2_OneShot
 from utils import accuracy, AvgrageMeter, CrossEntropyLabelSmooth, save_checkpoint, get_lastest_model, get_parameters
-from flops import get_cand_flops
+
+from flops import get_flops
 
 class OpencvResize(object):
 
@@ -24,12 +26,12 @@ class OpencvResize(object):
     def __call__(self, img):
         assert isinstance(img, PIL.Image.Image)
         img = np.asarray(img) # (H,W,3) RGB
-        img = img[:,:, ::-1] # 2 BGR
+        img = img[:,:,::-1] # 2 BGR
         img = np.ascontiguousarray(img)
         H, W, _ = img.shape
         target_size = (int(self.size/H * W + 0.5), self.size) if H < W else (self.size, int(self.size/W * H + 0.5))
         img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
-        img = img[:,:, ::-1] # 2 RGB
+        img = img[:,:,::-1] # 2 RGB
         img = np.ascontiguousarray(img)
         img = Image.fromarray(img)
         return img
@@ -40,7 +42,7 @@ class ToBGRTensor(object):
         assert isinstance(img, (np.ndarray, PIL.Image.Image))
         if isinstance(img, PIL.Image.Image):
             img = np.asarray(img)
-        img = img[:,:, ::-1] # 2 BGR
+        img = img[:,:,::-1] # 2 BGR
         img = np.transpose(img, [2, 0, 1]) # 2 (3, H, W)
         img = np.ascontiguousarray(img)
         img = torch.from_numpy(img).float()
@@ -60,49 +62,25 @@ class DataIterator(object):
             _, data = next(self.iterator)
         return data[0], data[1]
 
-from torch.utils.data import Sampler
-class SubsetSampler(Sampler):
-    r"""Samples elements from a given list of indices, without replacement.
-
-    Arguments:
-        indices (sequence): a sequence of indices
-    """
-    def __init__(self, indices):
-        self.indices = indices
-
-    def __iter__(self):
-        return (i for i in self.indices)
-
-    def __len__(self):
-        return len(self.indices)
-
 def get_args():
     parser = argparse.ArgumentParser("ShuffleNetV2_OneShot")
     parser.add_argument('--eval', default=False, action='store_true')
     parser.add_argument('--eval-resume', type=str, default='./snet_detnas.pkl', help='path for eval model')
-    parser.add_argument('--batch-size', type=int, default=128, help='batch size') # 1024
-    parser.add_argument('--total-iters', type=int, default=150000, help='total iters') # 150000
+    parser.add_argument('--batch-size', type=int, default=1024, help='batch size')
+    parser.add_argument('--total-iters', type=int, default=300000, help='total iters')
     parser.add_argument('--learning-rate', type=float, default=0.5, help='init learning rate')
     parser.add_argument('--momentum', type=float, default=0.9, help='momentum')
     parser.add_argument('--weight-decay', type=float, default=4e-5, help='weight decay')
     parser.add_argument('--save', type=str, default='./models', help='path for saving trained models')
     parser.add_argument('--label-smooth', type=float, default=0.1, help='label smoothing')
 
-    parser.add_argument('--auto-continue', type=bool, default=False, help='report frequency')
+    parser.add_argument('--auto-continue', type=bool, default=True, help='report frequency')
     parser.add_argument('--display-interval', type=int, default=20, help='report frequency')
     parser.add_argument('--val-interval', type=int, default=10000, help='report frequency')
-    parser.add_argument('--save-interval', type=int, default=10000, help='report frequency') # 10000
+    parser.add_argument('--save-interval', type=int, default=10000, help='report frequency')
 
-    # parser.add_argument('--train-dir', type=str, default='data/train', help='path to training dataset')
-    # parser.add_argument('--val-dir', type=str, default='data/val', help='path to validation dataset')
-
-    # original imagenet
-    parser.add_argument('--train-dir', type=str, default='/home/ubuntu/0_datasets/data/ILSVRC2012/train', help='path to training dataset')
-    parser.add_argument('--val-dir', type=str, default='/home/ubuntu/0_datasets/data/ILSVRC2012/val', help='path to validation dataset')
-
-    # parser.add_argument('--train-dir', type=str, default='/home/ubuntu/0_datasets/data/ILSVRC2012_1k/train', help='path to training dataset')
-    # parser.add_argument('--val-dir', type=str, default='/home/ubuntu/0_datasets/data/ILSVRC2012_1k/val', help='path to validation dataset')
-    # /home/ubuntu/0_datasets/data/ILSVRC2012
+    parser.add_argument('--train-dir', type=str, default='data/train', help='path to training dataset')
+    parser.add_argument('--val-dir', type=str, default='data/val', help='path to validation dataset')
 
     args = parser.parse_args()
     return args
@@ -126,7 +104,6 @@ def main():
     if torch.cuda.is_available():
         use_gpu = True
 
-    # dataset
     assert os.path.exists(args.train_dir)
     train_dataset = datasets.ImageFolder(
         args.train_dir,
@@ -137,44 +114,35 @@ def main():
             ToBGRTensor(),
         ])
     )
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset, batch_size=args.batch_size, shuffle=True,
+        num_workers=1, pin_memory=use_gpu)
+    train_dataprovider = DataIterator(train_loader)
 
     assert os.path.exists(args.val_dir)
-    # val_loader = torch.utils.data.DataLoader(
-    #     datasets.ImageFolder(args.val_dir, transforms.Compose([
-    #         OpencvResize(256),
-    #         transforms.CenterCrop(224),
-    #         ToBGRTensor(),
-    #     ])),
-    #     batch_size=200, shuffle=False,
-    #     num_workers=1, pin_memory=use_gpu
-    # )
-    val_dataset = datasets.ImageFolder(
-        args.val_dir,
-        transforms.Compose([
+    val_loader = torch.utils.data.DataLoader(
+        datasets.ImageFolder(args.val_dir, transforms.Compose([
             OpencvResize(256),
             transforms.CenterCrop(224),
             ToBGRTensor(),
-        ])
+        ])),
+        batch_size=200, shuffle=False,
+        num_workers=1, pin_memory=use_gpu
     )
-
-
-    # train_loader = torch.utils.data.DataLoader(
-    #     train_dataset, batch_size=args.batch_size, shuffle=True,
-    #     num_workers=1, pin_memory=use_gpu)
-    # val_loader = torch.utils.data.DataLoader(
-    #     val_dataset, batch_size=200, shuffle=False,
-    #     num_workers=1, pin_memory=use_gpu)
-    # train_dataprovider = DataIterator(train_loader)
-    # val_dataprovider = DataIterator(val_loader)
-
-    # split num_worker=32, 50000*0.01=500<10000
-    train_dataprovider, val_dataprovider, train_step, valid_step = get_dataset(train_dataset, val_dataset, args.batch_size, split=0.1) #
-
-
+    val_dataprovider = DataIterator(val_loader)
     print('load data successfully')
 
+    arch_path='arch.pkl'
 
-    model = ShuffleNetV2_OneShot()
+    if os.path.exists(arch_path):
+        with open(arch_path,'rb') as f:
+            architecture=pickle.load(f)
+    else:
+        raise NotImplementedError
+    channels_scales = (1.0,)*20
+    model = ShuffleNetV2_OneShot(architecture=architecture, channels_scales=channels_scales)
+
+    print('flops:',get_flops(model))
 
     optimizer = torch.optim.SGD(get_parameters(model),
                                 lr=args.learning_rate,
@@ -221,75 +189,15 @@ def main():
 
     while all_iters < args.total_iters:
         all_iters = train(model, device, args, val_interval=args.val_interval, bn_process=False, all_iters=all_iters)
-    # all_iters = train(model, device, args, val_interval=int(1280000/args.batch_size), bn_process=True, all_iters=all_iters)
-    # save_checkpoint({'state_dict': model.state_dict(),}, args.total_iters, tag='bnps-')
+        validate(model, device, args, all_iters=all_iters)
+    all_iters = train(model, device, args, val_interval=int(1280000/args.batch_size), bn_process=True, all_iters=all_iters)
+    validate(model, device, args, all_iters=all_iters)
+    save_checkpoint({'state_dict': model.state_dict(),}, args.total_iters, tag='bnps-')
 
 def adjust_bn_momentum(model, iters):
     for m in model.modules():
         if isinstance(m, nn.BatchNorm2d):
             m.momentum = 1 / iters
-
-
-def get_dataset(dataset_train, dataset_valid, batch_size, split=1.0):
-    from sklearn.model_selection import StratifiedShuffleSplit
-    from torch.utils.data import SubsetRandomSampler
-    split_idx = 0
-    train_sampler = None
-
-    split_idx_2 = 0
-    if split < 1.0:
-        sss = StratifiedShuffleSplit(n_splits=5, test_size=1-split, random_state=0)
-        sss = sss.split(list(range(len(dataset_train))), dataset_train.targets)
-        for _ in range(split_idx + 1):
-            train_idx, valid_idx = next(sss)
-        train_sampler = SubsetRandomSampler(train_idx)
-        valid_sampler = SubsetSampler(valid_idx)
-
-        #
-        # sss_2 = StratifiedShuffleSplit(n_splits=5, test_size=1 - split, random_state=0)
-        # sss_2 = sss_2.split(list(range(len(dataset_valid))), dataset_valid.targets)
-        # for _ in range(split_idx_2 + 1):
-        #     train_idx_2, valid_idx_2 = next(sss_2)
-        # valid_sampler_2 = SubsetSampler(train_idx_2)
-
-    else:
-        valid_sampler = SubsetSampler([])
-
-    train_loader = torch.utils.data.DataLoader(
-        dataset_train, batch_size=batch_size, shuffle=True if train_sampler is None else False, num_workers=32,
-        pin_memory=True, sampler=train_sampler, drop_last=True)
-
-    # valid_loader = torch.utils.data.DataLoader(
-    #     dataset_valid, batch_size=batch_size, shuffle=True if train_sampler is None else False, num_workers=16,
-    #     pin_memory=True, sampler=valid_sampler, drop_last=True)
-
-    valid_loader = torch.utils.data.DataLoader(
-        dataset_valid, batch_size=batch_size, shuffle=False, num_workers=16, pin_memory=True, drop_last=True)
-
-    # valid_loader = torch.utils.data.DataLoader(
-    #     dataset_valid, batch_size=batch_size, shuffle=True if train_sampler is None else False, num_workers=16,
-    #     pin_memory=True, sampler=valid_sampler_2, drop_last=True)
-
-    print(
-          'train/valid:{}/{},\t '
-          'batchsize:{} * train-step/valid-step:{}/{} -> train/valid:{}/{},\t'
-          'Split train/valid:{}/{} '.format(
-        len(dataset_train),
-        len(dataset_valid),
-        batch_size,
-        int(len(train_loader)),
-        int(len(valid_loader)),
-        int(len(train_loader)) * batch_size,
-        int(len(valid_loader)) * batch_size,
-        len(train_loader)/(len(dataset_train)//batch_size),
-        len(valid_loader)/(len(dataset_valid)//batch_size),
-        )
-    )
-
-    train_dataprovider = DataIterator(train_loader)
-    val_dataprovider = DataIterator(valid_loader)
-
-    return train_dataprovider, val_dataprovider, int(len(train_loader)), int(len(valid_loader))
 
 def train(model, device, args, *, val_interval, bn_process=False, all_iters=None):
 
@@ -313,30 +221,10 @@ def train(model, device, args, *, val_interval, bn_process=False, all_iters=None
         data, target = data.to(device), target.to(device)
         data_time = time.time() - d_st
 
-
-        get_random_cand = lambda:tuple(np.random.randint(4) for i in range(20))
-        flops_l, flops_r, flops_step = 290, 360, 10
-        bins = [[i, i+flops_step] for i in range(flops_l, flops_r, flops_step)]
-
-        def get_uniform_sample_cand(*,timeout=500):
-            idx = np.random.randint(len(bins))
-            l, r = bins[idx]
-            for i in range(timeout):
-                cand = get_random_cand()
-                if l*1e6 <= get_cand_flops(cand) <= r*1e6:
-                    # print("the {} iters is {}.\n".format(iters, cand))
-                    return cand
-            return get_random_cand()
-
-        output = model(data, get_uniform_sample_cand())
+        output = model(data)
         loss = loss_function(output, target)
         optimizer.zero_grad()
         loss.backward()
-
-        for p in model.parameters():
-            if p.grad is not None and p.grad.sum() == 0:
-                p.grad = None
-
         optimizer.step()
         prec1, prec5 = accuracy(output, target, topk=(1, 5))
 

@@ -1,6 +1,6 @@
 import torch
 
-from imagenet_dataset import get_train_dataprovider, get_val_dataprovider
+from cifar_dataset import get_train_dataprovider, get_val_dataprovider
 import tqdm
 
 assert torch.cuda.is_available()
@@ -30,8 +30,10 @@ def no_grad_wrapper(func):
     return new_func
 
 
+
 @no_grad_wrapper
 def get_cand_err(model, cand, args):
+
     global train_dataprovider, val_dataprovider
 
     if train_dataprovider is None:
@@ -85,9 +87,9 @@ def get_cand_err(model, cand, args):
         # print('get data',data.shape)
         target = target.type(torch.LongTensor)
         data, target = data.to(device), target.to(device)
-        # 200, 200
+
         logits = model(data, cand)
-        # (200, 1000)
+
         prec1, prec5 = accuracy(logits, target, topk=(1, 5))
 
         # print(prec1.item(),prec5.item())
